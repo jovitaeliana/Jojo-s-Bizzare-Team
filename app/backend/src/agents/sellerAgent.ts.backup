@@ -1,0 +1,473 @@
+/**
+ * Seller Agent - LangGraph Implementation
+ * 
+ * Autonomous seller agent that:
+ * 1. Creates and publishes product listings
+ * 2. Listens for buyer offers via A2A protocol
+ * 3. Evaluates offers using LLM
+ * 4. Accepts/rejects/counters offers
+ * 5. Confirms shipment after payment
+ */
+
+import { StateGraph, END } from "@langchain/langgraph";
+import { ChatGroq } from "@langchain/groq";
+import { sellingAgentService } from "../services/sellingAgent.js";
+import { A2AMessage } from "../types/a2a.js";
+import {
+  Listing,
+  BuyerOffer,
+  createOfferEvaluationPrompt,
+  createShipmentConfirmationPrompt,
+} from "./prompts/sellerPrompts.js";
+
+/**
+ * Seller Agent State
+ */
+export interface SellerState {
+  listing: Listing | null;
+  incomingOffers: BuyerOffer[];
+  currentOffer: BuyerOffer | null;
+  offerEvaluation: {
+    acceptable: boolean;
+    action: "accept" | "counter" | "reject";
+    counterOffer?: number;
+    message: string;
+    reasoning: string;
+  } | null;
+  paymentReceived: boolean;
+  shipmentConfirmed: boolean;
+  currentStep: string;
+  error: string | null;
+  finalResult: any;
+}
+
+/**
+ * Seller Agent Class
+ */
+export class SellerAgent {
+  private llm: ChatGroq;
+  private graph: StateGraph<SellerState>;
+
+  constructor(apiKey: string) {
+    // Initialize Groq LLM
+    this.llm = new ChatGroq({
+      apiKey,
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.7,
+    });
+
+    // Build state graph
+    this.graph = this.buildGraph();
+  }
+
+  /**
+   * Build LangGraph state machine
+   */
+  private buildGraph(): StateGraph<SellerState> {
+    const graph = new StateGraph<SellerState>({
+      channels: {
+        listing: null,
+        incomingOffers: null,
+        currentOffer: null,
+        offerEvaluation: null,
+        paymentReceived: null,
+        shipmentConfirmed: null,
+        currentStep: null,
+        error: null,
+        finalResult: null,
+      },
+    });
+
+    // Add nodes
+    graph.addNode("list", this.listNode.bind(this));
+    graph.addNode("wait", this.waitNode.bind(this));
+    graph.addNode("evaluate", this.evaluateNode.bind(this));
+    graph.addNode("accept", this.acceptNode.bind(this));
+    graph.addNode("ship", this.shipNode.bind(this));
+
+    // Add edges
+    graph.addEdge("list", "wait");
+    graph.addConditionalEdges("wait", this.hasOffer.bind(this), {
+      evaluate: "evaluate",
+      wait: "wait",
+    });
+    graph.addConditionalEdges("evaluate", this.shouldAccept.bind(this), {
+      accept: "accept",
+      wait: "wait", // Rejected, wait for next offer
+    });
+    graph.addConditionalEdges("accept", this.hasPayment.bind(this), {
+      ship: "ship",
+      wait: "wait",
+    });
+    graph.addEdge("ship", END);
+
+    // Set entry point
+    graph.setEntryPoint("list");
+
+    return graph;
+  }
+
+  /**
+   * Node: Create and publish listing
+   */
+  private async listNode(state: SellerState): Promise<Partial<SellerState>> {
+    console.log("\n📝 [LIST] Creating product listing...");
+
+    if (!state.listing) {
+      return {
+        currentStep: "list",
+        error: "No listing provided",
+      };
+    }
+
+    try {
+      // Create listing via selling agent service
+      const listing = await sellingAgentService.createListing(
+        state.listing.title,
+        state.listing.description,
+        state.listing.price,
+        state.listing.currency,
+        undefined, // imageUrl
+        state.listing.condition as any,
+        state.listing.category
+      );
+
+      // Publish listing
+      await sellingAgentService.publishListing(
+        listing.id,
+        state.listing.sellerAddress || process.env.SELLER_EVM_ADDRESS || ""
+      );
+
+      console.log(`   ✅ Listing published: ${listing.id}`);
+      console.log(`   Title: ${listing.title}`);
+      console.log(`   Price: ${listing.price} ${listing.currency}`);
+
+      return {
+        listing: listing as Listing,
+        currentStep: "list",
+        error: null,
+      };
+    } catch (error: any) {
+      console.error("   ❌ Listing failed:", error.message);
+      return {
+        currentStep: "list",
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Node: Wait for buyer offers
+   */
+  private async waitNode(state: SellerState): Promise<Partial<SellerState>> {
+    console.log("\n⏳ [WAIT] Waiting for buyer offers...");
+
+    // In a real implementation, this would listen to A2A messages
+    // For now, we'll simulate waiting
+    
+    if (state.incomingOffers.length > 0) {
+      const nextOffer = state.incomingOffers[0];
+      console.log(`   📥 Received offer from buyer ${nextOffer.buyerAgentId}`);
+      console.log(`   Offer: ${nextOffer.offerPrice} ${nextOffer.currency}`);
+
+      return {
+        currentOffer: nextOffer,
+        currentStep: "wait",
+        error: null,
+      };
+    }
+
+    console.log("   ⏳ No offers yet...");
+    return {
+      currentStep: "wait",
+      error: null,
+    };
+  }
+
+  /**
+   * Node: Evaluate buyer offer using LLM
+   */
+  private async evaluateNode(state: SellerState): Promise<Partial<SellerState>> {
+    console.log("\n🤔 [EVALUATE] Evaluating buyer offer with LLM...");
+
+    if (!state.listing || !state.currentOffer) {
+      return {
+        offerEvaluation: null,
+        currentStep: "evaluate",
+        error: "No listing or offer to evaluate",
+      };
+    }
+
+    try {
+      // Create evaluation prompt
+      const prompt = createOfferEvaluationPrompt(state.listing, state.currentOffer);
+
+      // Get LLM decision
+      const response = await this.llm.invoke(prompt);
+      const evaluation = JSON.parse(response.content as string);
+
+      console.log(`   Action: ${evaluation.action}`);
+      console.log(`   Reasoning: ${evaluation.reasoning}`);
+
+      if (evaluation.action === "accept") {
+        console.log("   ✅ Accepting offer!");
+      } else if (evaluation.action === "counter") {
+        console.log(`   💬 Counter-offering: ${evaluation.counterOffer} ${state.listing.currency}`);
+      } else {
+        console.log("   ❌ Rejecting offer");
+      }
+
+      return {
+        offerEvaluation: evaluation,
+        currentStep: "evaluate",
+        error: null,
+      };
+    } catch (error: any) {
+      console.error("   ❌ Evaluation failed:", error.message);
+      return {
+        offerEvaluation: null,
+        currentStep: "evaluate",
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Node: Accept offer and provide payment details
+   */
+  private async acceptNode(state: SellerState): Promise<Partial<SellerState>> {
+    console.log("\n✅ [ACCEPT] Accepting offer...");
+
+    if (!state.offerEvaluation || !state.offerEvaluation.acceptable) {
+      return {
+        currentStep: "accept",
+        error: "No acceptable offer",
+      };
+    }
+
+    try {
+      console.log(`   📤 Sending acceptance message to buyer`);
+      console.log(`   Message: ${state.offerEvaluation.message}`);
+
+      // In a real implementation, this would send A2A message to buyer
+      // with payment details (escrow contract address, etc.)
+
+      return {
+        currentStep: "accept",
+        error: null,
+      };
+    } catch (error: any) {
+      console.error("   ❌ Acceptance failed:", error.message);
+      return {
+        currentStep: "accept",
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Node: Confirm shipment
+   */
+  private async shipNode(state: SellerState): Promise<Partial<SellerState>> {
+    console.log("\n📦 [SHIP] Confirming shipment...");
+
+    if (!state.listing || !state.paymentReceived) {
+      return {
+        currentStep: "ship",
+        error: "Cannot ship: no payment received",
+        finalResult: null,
+      };
+    }
+
+    try {
+      // Create shipment confirmation prompt
+      const prompt = createShipmentConfirmationPrompt(
+        state.listing,
+        state.currentOffer?.buyerAddress || "Unknown",
+        `TRACK-${Date.now()}`
+      );
+
+      // Get LLM to compose shipment message
+      const response = await this.llm.invoke(prompt);
+      const shipmentInfo = JSON.parse(response.content as string);
+
+      console.log(`   ✅ Shipment confirmed!`);
+      console.log(`   Message: ${shipmentInfo.message}`);
+      console.log(`   Tracking: ${shipmentInfo.trackingInfo}`);
+
+      // Mark listing as sold
+      if (state.listing.id) {
+        await sellingAgentService.markAsSold(
+          state.listing.id,
+          state.currentOffer?.buyerAddress || ""
+        );
+      }
+
+      return {
+        shipmentConfirmed: true,
+        currentStep: "ship",
+        error: null,
+        finalResult: {
+          success: true,
+          listing: state.listing,
+          soldPrice: state.currentOffer?.offerPrice,
+          shipmentInfo,
+        },
+      };
+    } catch (error: any) {
+      console.error("   ❌ Shipment failed:", error.message);
+      return {
+        shipmentConfirmed: false,
+        currentStep: "ship",
+        error: error.message,
+        finalResult: null,
+      };
+    }
+  }
+
+  /**
+   * Conditional edge: Has offer?
+   */
+  private hasOffer(state: SellerState): string {
+    if (state.currentOffer) {
+      return "evaluate";
+    }
+    return "wait";
+  }
+
+  /**
+   * Conditional edge: Should accept?
+   */
+  private shouldAccept(state: SellerState): string {
+    if (state.offerEvaluation?.acceptable) {
+      return "accept";
+    }
+    return "wait";
+  }
+
+  /**
+   * Conditional edge: Has payment?
+   */
+  private hasPayment(state: SellerState): string {
+    if (state.paymentReceived) {
+      return "ship";
+    }
+    return "wait";
+  }
+
+  /**
+   * Handle incoming A2A message (buyer offer)
+   */
+  async handleBuyerMessage(message: A2AMessage, agentId: string): Promise<A2AMessage> {
+    console.log("\n📨 [SELLER AGENT] Received message from buyer");
+
+    try {
+      // Extract offer details from message
+      const offerPrice = message.metadata?.offerPrice || 0;
+      const productId = message.metadata?.productId || "";
+      const buyerMessage = message.parts[0]?.text || "";
+
+      // Get listing
+      const listing = sellingAgentService.getListing(productId);
+      if (!listing) {
+        return {
+          role: "agent",
+          parts: [{ kind: "text", text: "Product not found" }],
+          metadata: { accepted: false, error: "Product not found" },
+        };
+      }
+
+      // Create buyer offer
+      const buyerOffer: BuyerOffer = {
+        buyerAgentId: agentId,
+        buyerAddress: message.metadata?.buyerAddress,
+        offerPrice,
+        currency: listing.currency,
+        message: buyerMessage,
+        timestamp: new Date().toISOString(),
+      };
+
+      // Evaluate offer using LLM
+      const prompt = createOfferEvaluationPrompt(listing as Listing, buyerOffer);
+      const response = await this.llm.invoke(prompt);
+      const evaluation = JSON.parse(response.content as string);
+
+      console.log(`   Evaluation: ${evaluation.action}`);
+      console.log(`   Reasoning: ${evaluation.reasoning}`);
+
+      // Return response to buyer
+      return {
+        role: "agent",
+        parts: [{ kind: "text", text: evaluation.message }],
+        metadata: {
+          accepted: evaluation.acceptable,
+          action: evaluation.action,
+          counterOffer: evaluation.counterOffer,
+          escrowAddress: process.env.ESCROW_FACTORY_ADDRESS,
+        },
+      };
+    } catch (error: any) {
+      console.error("   ❌ Message handling failed:", error.message);
+      return {
+        role: "agent",
+        parts: [{ kind: "text", text: "Error processing offer" }],
+        metadata: { accepted: false, error: error.message },
+      };
+    }
+  }
+
+  /**
+   * Execute seller agent workflow
+   */
+  async executeSale(listing: Listing): Promise<any> {
+    console.log("\n" + "=".repeat(60));
+    console.log("🤖 SELLER AGENT - Starting Sale Workflow");
+    console.log("=".repeat(60));
+    console.log(`Product: ${listing.title}`);
+    console.log(`Price: ${listing.price} ${listing.currency}`);
+    console.log("=".repeat(60));
+
+    const initialState: SellerState = {
+      listing,
+      incomingOffers: [],
+      currentOffer: null,
+      offerEvaluation: null,
+      paymentReceived: false,
+      shipmentConfirmed: false,
+      currentStep: "start",
+      error: null,
+      finalResult: null,
+    };
+
+    try {
+      const compiledGraph = this.graph.compile();
+      const result = await compiledGraph.invoke(initialState);
+
+      console.log("\n" + "=".repeat(60));
+      console.log("🎉 SELLER AGENT - Workflow Complete");
+      console.log("=".repeat(60));
+      console.log("Final State:", JSON.stringify(result.finalResult, null, 2));
+      console.log("=".repeat(60) + "\n");
+
+      return result;
+    } catch (error: any) {
+      console.error("\n❌ SELLER AGENT - Workflow Failed:", error.message);
+      throw error;
+    }
+  }
+}
+
+// Export singleton instance
+let sellerAgentInstance: SellerAgent | null = null;
+
+export function getSellerAgent(): SellerAgent {
+  if (!sellerAgentInstance) {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      throw new Error("GROQ_API_KEY not found in environment variables");
+    }
+    sellerAgentInstance = new SellerAgent(apiKey);
+  }
+  return sellerAgentInstance;
+}
+

@@ -1,0 +1,130 @@
+{
+  "protocolVersion": "0.3.0",
+  "name": "Marketplace Buyer Agent",
+  "description": "AI agent that discovers products, negotiates prices, and manages purchases on the Hedera marketplace. Capable of autonomous decision-making for product discovery, price negotiation, and secure escrow-based transactions.",
+  "url": "http://localhost:3000/api/a2a/buyer",
+  "preferredTransport": "JSONRPC",
+  "iconUrl": "http://localhost:3000/agents/buyer/icon.png",
+  "provider": {
+    "organization": "Hedera Marketplace",
+    "url": "https://marketplace.hedera.com"
+  },
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:3000/agents/buyer/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "extensions": []
+  },
+  "securitySchemes": {
+    "bearer": {
+      "type": "http",
+      "scheme": "bearer",
+      "bearerFormat": "JWT",
+      "description": "JWT token for buyer agent authentication"
+    }
+  },
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
+  "defaultInputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "defaultOutputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "skills": [
+    {
+      "id": "discover-products",
+      "name": "Product Discovery",
+      "description": "Discover and search for products on the marketplace using ERC-8004 agent discovery protocol. Can filter by category, price range, seller reputation, and other criteria.",
+      "tags": ["discovery", "search", "erc-8004"],
+      "inputModes": ["text/plain", "application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "Find electronics under $500",
+          "output": "Returns list of matching products with seller information"
+        }
+      ]
+    },
+    {
+      "id": "negotiate-price",
+      "name": "Price Negotiation",
+      "description": "Autonomously negotiate prices with seller agents using A2A protocol. Employs strategic negotiation tactics based on market data, seller reputation, and buyer preferences.",
+      "tags": ["negotiation", "a2a", "autonomous"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "Negotiate price for product ID 12345, target: $450",
+          "output": "Returns negotiation result with final agreed price"
+        }
+      ]
+    },
+    {
+      "id": "create-purchase",
+      "name": "Purchase Creation",
+      "description": "Create and fund escrow contracts for secure purchases. Handles HBAR transfers, escrow creation via EscrowFactory, and transaction verification on Hedera testnet.",
+      "tags": ["purchase", "escrow", "hedera", "x402"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "Purchase product ID 12345 for 100 HBAR",
+          "output": "Returns escrow contract address and transaction hash"
+        }
+      ]
+    },
+    {
+      "id": "confirm-delivery",
+      "name": "Delivery Confirmation",
+      "description": "Confirm receipt of purchased items and release escrow funds to seller. Verifies delivery proof and executes on-chain confirmation transaction.",
+      "tags": ["delivery", "escrow", "verification"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "Confirm delivery for escrow 0x123...",
+          "output": "Returns confirmation transaction hash"
+        }
+      ]
+    },
+    {
+      "id": "track-orders",
+      "name": "Order Tracking",
+      "description": "Track status of ongoing purchases and escrow contracts. Monitors blockchain events and provides real-time updates on order status.",
+      "tags": ["tracking", "monitoring", "hcs"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "Get status of all my orders",
+          "output": "Returns list of orders with current status"
+        }
+      ]
+    },
+    {
+      "id": "request-refund",
+      "name": "Refund Request",
+      "description": "Request refunds for undelivered or unsatisfactory purchases. Initiates escrow refund process and handles dispute resolution.",
+      "tags": ["refund", "dispute", "escrow"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "Request refund for escrow 0x123..., reason: not delivered",
+          "output": "Returns refund transaction hash"
+        }
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}
+

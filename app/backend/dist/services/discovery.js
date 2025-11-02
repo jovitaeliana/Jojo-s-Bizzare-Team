@@ -1,0 +1,209 @@
+/**
+ * Agent Discovery Service
+ *
+ * Integrates ERC-8004 on-chain agent registry with A2A AgentCard discovery.
+ * Provides unified discovery interface for finding agents by capabilities,
+ * fetching AgentCards, and verifying agent identities.
+ */
+import { erc8004Service } from "./erc8004.js";
+import dotenv from "dotenv";
+dotenv.config();
+/**
+ * Agent Discovery Service
+ */
+export class DiscoveryService {
+    erc8004 = erc8004Service; // Use singleton instance
+    localAgentCards;
+    constructor() {
+        this.localAgentCards = new Map();
+    }
+    /**
+     * Register a local AgentCard for quick lookup
+     */
+    registerLocalAgentCard(agentId, card) {
+        this.localAgentCards.set(agentId, card);
+        console.log(`📋 Registered local AgentCard for agent ${agentId}: ${card.name}`);
+    }
+    /**
+     * Fetch AgentCard from URL
+     */
+    async fetchAgentCard(url) {
+        try {
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            const card = await response.json();
+            return card;
+        }
+        catch (error) {
+            console.error(`Failed to fetch AgentCard from ${url}:`, error.message);
+            return null;
+        }
+    }
+    /**
+     * Get AgentCard for a specific agent
+     */
+    async getAgentCard(agentId) {
+        // Check local cache first
+        if (this.localAgentCards.has(agentId)) {
+            return this.localAgentCards.get(agentId);
+        }
+        // Fetch from ERC-8004 metadata
+        try {
+            const tokenURI = await this.erc8004.getAgentMetadata(agentId, "tokenURI");
+            if (tokenURI) {
+                const card = await this.fetchAgentCard(tokenURI);
+                if (card) {
+                    this.localAgentCards.set(agentId, card);
+                    return card;
+                }
+            }
+        }
+        catch (error) {
+            console.error(`Failed to get AgentCard for agent ${agentId}:`, error.message);
+        }
+        return null;
+    }
+    /**
+     * Discover agents by capability
+     */
+    async discoverByCapability(capability) {
+        console.log(`🔍 Discovering agents with capability: ${capability}`);
+        const agents = await this.erc8004.discoverAgents(capability);
+        const agentsWithCards = [];
+        for (const agent of agents) {
+            const card = await this.getAgentCard(agent.agentId);
+            agentsWithCards.push({
+                ...agent,
+                agentCard: card || undefined,
+                cardUrl: card ? agent.metadata.find((m) => m.key === "tokenURI")?.value : undefined,
+                cardFetchError: card ? undefined : "Failed to fetch AgentCard",
+            });
+        }
+        return agentsWithCards;
+    }
+    /**
+     * Discover agents by skill
+     */
+    async discoverBySkill(skillId) {
+        console.log(`🔍 Discovering agents with skill: ${skillId}`);
+        // Get all agents
+        const allAgents = await this.erc8004.discoverAgents();
+        const matchingAgents = [];
+        for (const agent of allAgents) {
+            const card = await this.getAgentCard(agent.agentId);
+            if (card && card.skills.some(skill => skill.id === skillId)) {
+                matchingAgents.push({
+                    ...agent,
+                    agentCard: card,
+                    cardUrl: agent.metadata.find((m) => m.key === "tokenURI")?.value,
+                });
+            }
+        }
+        return matchingAgents;
+    }
+    /**
+     * Discover agents with advanced filtering
+     */
+    async discover(filter = {}) {
+        console.log(`🔍 Discovering agents with filter:`, filter);
+        let agents;
+        // Start with capability filter if provided
+        if (filter.capability) {
+            agents = await this.erc8004.discoverAgents(filter.capability);
+        }
+        else {
+            agents = await this.erc8004.discoverAgents();
+        }
+        // Fetch AgentCards and apply additional filters
+        const agentsWithCards = [];
+        for (const agent of agents) {
+            const card = await this.getAgentCard(agent.agentId);
+            // Apply skill filter
+            if (filter.skill && card) {
+                if (!card.skills.some(skill => skill.id === filter.skill)) {
+                    continue;
+                }
+            }
+            // Apply agent type filter
+            if (filter.agentType && agent.metadata) {
+                const agentType = agent.metadata.find(m => m.key === "agentType")?.value;
+                if (agentType !== filter.agentType) {
+                    continue;
+                }
+            }
+            agentsWithCards.push({
+                ...agent,
+                agentCard: card || undefined,
+                cardUrl: card ? agent.metadata.find(m => m.key === "tokenURI")?.value : undefined,
+                cardFetchError: card ? undefined : "Failed to fetch AgentCard"
+            });
+        }
+        return agentsWithCards;
+    }
+    /**
+     * Get our registered agents (buyer and seller)
+     */
+    async getOurAgents() {
+        const buyerAgentId = process.env.BUYER_AGENT_ID;
+        const sellerAgentId = process.env.SELLER_AGENT_ID;
+        const result = {};
+        if (buyerAgentId) {
+            try {
+                const buyerCapabilities = await this.erc8004.queryAgentCapabilities(buyerAgentId);
+                const buyerInfo = await this.erc8004.getAgentInfo(buyerAgentId);
+                const buyerCard = await this.getAgentCard(buyerAgentId);
+                // Convert metadata Record to MetadataEntry array
+                const metadata = Object.entries(buyerInfo.metadata).map(([key, value]) => ({
+                    key,
+                    value
+                }));
+                result.buyer = {
+                    agentId: buyerAgentId,
+                    owner: buyerInfo.owner,
+                    capabilities: buyerCapabilities,
+                    metadata,
+                    agentCard: buyerCard || undefined,
+                    cardUrl: buyerCard ? `http://localhost:3000/agents/buyer/card.json` : undefined
+                };
+            }
+            catch (error) {
+                console.error(`Failed to get buyer agent info:`, error.message);
+            }
+        }
+        if (sellerAgentId) {
+            try {
+                const sellerCapabilities = await this.erc8004.queryAgentCapabilities(sellerAgentId);
+                const sellerInfo = await this.erc8004.getAgentInfo(sellerAgentId);
+                const sellerCard = await this.getAgentCard(sellerAgentId);
+                // Convert metadata Record to MetadataEntry array
+                const metadata = Object.entries(sellerInfo.metadata).map(([key, value]) => ({
+                    key,
+                    value
+                }));
+                result.seller = {
+                    agentId: sellerAgentId,
+                    owner: sellerInfo.owner,
+                    capabilities: sellerCapabilities,
+                    metadata,
+                    agentCard: sellerCard || undefined,
+                    cardUrl: sellerCard ? `http://localhost:3000/agents/seller/card.json` : undefined
+                };
+            }
+            catch (error) {
+                console.error(`Failed to get seller agent info:`, error.message);
+            }
+        }
+        return result;
+    }
+    /**
+     * Verify agent identity
+     */
+    async verifyAgent(agentId, expectedOwner) {
+        return this.erc8004.verifyAgentIdentity(agentId, expectedOwner);
+    }
+}
+// Export singleton instance
+export const discoveryService = new DiscoveryService();
+//# sourceMappingURL=discovery.js.map

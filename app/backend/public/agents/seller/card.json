@@ -1,0 +1,158 @@
+{
+  "protocolVersion": "0.3.0",
+  "name": "Marketplace Seller Agent",
+  "description": "AI agent that lists products, negotiates with buyers, and manages sales on the Hedera marketplace. Handles inventory management, dynamic pricing, order fulfillment, and secure escrow-based transactions.",
+  "url": "http://localhost:3000/api/a2a/seller",
+  "preferredTransport": "JSONRPC",
+  "iconUrl": "http://localhost:3000/agents/seller/icon.png",
+  "provider": {
+    "organization": "Hedera Marketplace",
+    "url": "https://marketplace.hedera.com"
+  },
+  "version": "1.0.0",
+  "documentationUrl": "http://localhost:3000/agents/seller/docs",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": true,
+    "extensions": []
+  },
+  "securitySchemes": {
+    "bearer": {
+      "type": "http",
+      "scheme": "bearer",
+      "bearerFormat": "JWT",
+      "description": "JWT token for seller agent authentication"
+    }
+  },
+  "security": [
+    {
+      "bearer": []
+    }
+  ],
+  "defaultInputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "defaultOutputModes": [
+    "text/plain",
+    "application/json"
+  ],
+  "skills": [
+    {
+      "id": "list-products",
+      "name": "Product Listing",
+      "description": "List and manage products on the marketplace. Register products with ERC-8004 for discoverability, set prices, manage inventory, and update product information.",
+      "tags": ["listing", "inventory", "erc-8004"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "List new product: Laptop, price: 500 HBAR",
+          "output": "Returns product ID and ERC-8004 registration confirmation"
+        }
+      ]
+    },
+    {
+      "id": "negotiate-price",
+      "name": "Price Negotiation",
+      "description": "Autonomously negotiate prices with buyer agents using A2A protocol. Uses dynamic pricing strategies based on inventory levels, market demand, and profit margins.",
+      "tags": ["negotiation", "a2a", "autonomous", "pricing"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "Negotiate with buyer for product ID 12345",
+          "output": "Returns negotiation result with final agreed price"
+        }
+      ]
+    },
+    {
+      "id": "accept-payment",
+      "name": "Payment Acceptance",
+      "description": "Accept payments via escrow contracts and x402 protocol. Monitors escrow funding, verifies payment amounts, and tracks transaction status on Hedera testnet.",
+      "tags": ["payment", "escrow", "x402", "hedera"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "Accept payment for order ID 67890",
+          "output": "Returns escrow address and payment confirmation"
+        }
+      ]
+    },
+    {
+      "id": "confirm-shipment",
+      "name": "Shipment Confirmation",
+      "description": "Confirm shipment of sold items and update escrow status. Records shipment details on-chain and notifies buyer agent via A2A protocol.",
+      "tags": ["shipment", "fulfillment", "escrow"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "Confirm shipment for order ID 67890, tracking: ABC123",
+          "output": "Returns shipment confirmation transaction hash"
+        }
+      ]
+    },
+    {
+      "id": "manage-inventory",
+      "name": "Inventory Management",
+      "description": "Manage product inventory levels, track stock, and update availability. Automatically adjusts pricing based on inventory levels and demand.",
+      "tags": ["inventory", "stock", "management"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "Update inventory for product ID 12345, quantity: 50",
+          "output": "Returns updated inventory status"
+        }
+      ]
+    },
+    {
+      "id": "track-sales",
+      "name": "Sales Tracking",
+      "description": "Track sales performance, revenue, and order status. Monitors escrow contracts, completed transactions, and provides analytics on sales trends.",
+      "tags": ["tracking", "analytics", "hcs"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "Get sales report for last 30 days",
+          "output": "Returns sales analytics with revenue and order counts"
+        }
+      ]
+    },
+    {
+      "id": "handle-disputes",
+      "name": "Dispute Resolution",
+      "description": "Handle buyer disputes and refund requests. Manages escrow refund process, provides evidence for disputes, and coordinates with buyer agents.",
+      "tags": ["dispute", "refund", "escrow"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "Handle dispute for order ID 67890",
+          "output": "Returns dispute resolution status"
+        }
+      ]
+    },
+    {
+      "id": "instant-payment",
+      "name": "Instant Payment Processing",
+      "description": "Process instant HBAR payments via x402 protocol for immediate transactions. Supports both escrow-based and direct payment methods.",
+      "tags": ["payment", "x402", "instant", "hedera"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"],
+      "examples": [
+        {
+          "input": "Process instant payment of 100 HBAR for product ID 12345",
+          "output": "Returns payment transaction hash and confirmation"
+        }
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "signatures": []
+}
+

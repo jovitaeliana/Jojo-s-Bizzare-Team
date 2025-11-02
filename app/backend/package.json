@@ -1,0 +1,58 @@
+{
+  "name": "hedera-marketplace-backend",
+  "version": "1.0.0",
+  "description": "Backend server for Hedera Agentic Marketplace with LangGraph agents and smart contracts",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "compile": "hardhat compile",
+    "deploy:contracts": "tsx scripts/deploy.ts",
+    "create:accounts": "tsx scripts/create-accounts.ts",
+    "register:agents": "tsx scripts/register-agents.ts",
+    "test:discovery": "tsx scripts/test-discovery.ts",
+    "test:agentcard": "tsx scripts/test-agentcard-discovery.ts",
+    "test:a2a": "tsx scripts/test-a2a-server.ts",
+    "test:a2a:flow": "tsx scripts/test-a2a-flow.ts",
+    "test:langgraph": "tsx scripts/test-langgraph-agents.ts",
+    "test:x402": "tsx scripts/test-x402-payments.ts",
+    "test:x402:integration": "tsx scripts/test-x402-integration.ts",
+    "bootstrap:seller": "tsx scripts/bootstrap-seller-listing.ts",
+    "verify:completion": "tsx scripts/verify-completion.ts",
+    "test:escrow": "tsx scripts/test-escrow.ts",
+    "test": "hardhat test"
+  },
+  "keywords": [
+    "hedera",
+    "blockchain",
+    "marketplace",
+    "ai-agents",
+    "langgraph",
+    "escrow"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@hashgraph/sdk": "^2.49.2",
+    "@langchain/core": "^0.3.29",
+    "@langchain/groq": "^0.1.2",
+    "@langchain/langgraph": "^0.2.28",
+    "axios": "^1.13.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "ethers": "^6.13.4",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^3.0.8",
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.5",
+    "hardhat": "^2.22.18",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

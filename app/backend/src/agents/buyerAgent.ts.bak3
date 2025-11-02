@@ -1,0 +1,568 @@
+/**
+ * Buyer Agent - LangGraph Implementation
+ * 
+ * Autonomous buyer agent that:
+ * 1. Discovers products using ERC-8004 and discovery service
+ * 2. Selects best product using LLM
+ * 3. Negotiates with seller via A2A protocol
+ * 4. Executes payment via x402/escrow
+ * 5. Confirms delivery and releases funds
+ */
+
+import { StateGraph, END, Annotation } from "@langchain/langgraph";
+import { ChatGroq } from "@langchain/groq";
+import { DiscoveryService } from "../services/discovery.js";
+import { A2AClient } from "../services/a2aClient.js";
+import { X402Service } from "../services/x402.js";
+import {
+  Product,
+  createProductSelectionPrompt,
+  createNegotiationPrompt,
+  createCounterOfferEvaluationPrompt,
+  createDeliveryConfirmationPrompt,
+} from "./prompts/buyerPrompts.js";
+
+/**
+ * Buyer Agent State (LangGraph 0.2.x API)
+ */
+const BuyerState = Annotation.Root({
+  userRequest: Annotation<string>(),
+  userBudget: Annotation<number | undefined>(),
+  discoveredProducts: Annotation<Product[]>({
+    reducer: (x, y) => y || x,
+    default: () => []
+  }),
+  selectedProduct: Annotation<Product | null>({
+    reducer: (x, y) => y !== undefined ? y : x,
+    default: () => null
+  }),
+  negotiationHistory: Annotation<any[]>({
+    reducer: (x, y) => [...x, ...y],
+    default: () => []
+  }),
+  offerAccepted: Annotation<boolean>({
+    default: () => false
+  }),
+  paymentId: Annotation<string | null>({
+    default: () => null
+  }),
+  escrowId: Annotation<string | null>({
+    default: () => null
+  }),
+  currentStep: Annotation<string>({
+    default: () => 'init'
+  }),
+  error: Annotation<string | null>({
+    default: () => null
+  }),
+  finalResult: Annotation<any | null>({
+    default: () => null
+  })
+});
+
+export type BuyerStateType = typeof BuyerState.State;
+
+/**
+ * Buyer Agent Class
+ */
+export class BuyerAgent {
+  private llm: ChatGroq;
+  private graph: ReturnType<typeof this.buildGraph>;
+  private a2aClient: A2AClient;
+  private discoveryService: DiscoveryService;
+  private x402Service: X402Service;
+  private agentId: string;
+
+  constructor(agentId: string, apiKey: string) {
+    this.agentId = agentId;
+
+    // Initialize Groq LLM
+    this.llm = new ChatGroq({
+      apiKey: apiKey || process.env.GROQ_API_KEY,
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.7,
+    });
+
+    // Initialize services with correct constructor signatures
+    this.a2aClient = new A2AClient({
+      baseUrl: process.env.A2A_BASE_URL || 'http://localhost:3000',
+      auth: {
+        type: 'api-key',
+        apiKey: process.env.BUYER_API_KEY || 'demo-buyer-key'
+      },
+      timeout: 30000
+    });
+
+    this.discoveryService = new DiscoveryService();
+    this.x402Service = new X402Service();
+
+    // Build state graph
+    this.graph = this.buildGraph();
+  }
+
+  /**
+   * Build LangGraph state machine (0.2.x API)
+   */
+  private buildGraph() {
+    const workflow = new StateGraph(BuyerState);
+
+    // Add nodes
+    workflow.addNode("discover", this.discoverNode.bind(this));
+    workflow.addNode("select", this.selectNode.bind(this));
+    workflow.addNode("negotiate", this.negotiateNode.bind(this));
+    workflow.addNode("pay", this.payNode.bind(this));
+    workflow.addNode("complete", this.completeNode.bind(this));
+
+    // Add edges
+    workflow.addEdge("discover", "select");
+    workflow.addConditionalEdges("select", this.shouldNegotiate.bind(this), {
+      negotiate: "negotiate",
+      end: END,
+    });
+    workflow.addConditionalEdges("negotiate", this.shouldPay.bind(this), {
+      pay: "pay",
+      select: "select", // Try another product if rejected
+      end: END,
+    });
+    workflow.addEdge("pay", "complete");
+    workflow.addEdge("complete", END);
+
+    // Set entry point
+    workflow.setEntryPoint("discover");
+
+    return workflow.compile();
+  }
+
+  /**
+   * Node: Discover products
+   */
+  private async discoverNode(state: BuyerStateType): Promise<Partial<BuyerStateType>> {
+    console.log("\n🔍 [DISCOVER] Searching for products...");
+    console.log(`   User Request: "${state.userRequest}"`);
+
+    try {
+      // Get all active listings from discovery service
+      const allAgents = await this.discoveryService.discoverByCapability('marketplace_seller');
+      
+      // Filter for seller agents with active listings
+      const products: Product[] = [];
+      
+      // For demo, create sample products
+      // In production, this would query actual listings from seller agents
+      products.push({
+        id: "product-1",
+        title: "MacBook Pro 2021 14\"",
+        description: "Like-new MacBook Pro with M1 Pro chip, 16GB RAM, 512GB SSD",
+        price: 1500,
+        currency: "HBAR",
+        condition: "like-new",
+        category: "electronics",
+        sellerAgentId: "28",
+        sellerAddress: process.env.SELLER_EVM_ADDRESS,
+      });
+
+      products.push({
+        id: "product-2",
+        title: "iPhone 13 Pro",
+        description: "Excellent condition iPhone 13 Pro, 256GB, unlocked",
+        price: 800,
+        currency: "HBAR",
+        condition: "good",
+        category: "electronics",
+        sellerAgentId: "28",
+        sellerAddress: process.env.SELLER_EVM_ADDRESS,
+      });
+
+      console.log(`   ✅ Found ${products.length} products`);
+
+      return {
+        discoveredProducts: products,
+        currentStep: "discover",
+        error: null,
+      };
+    } catch (error: any) {
+      console.error("   ❌ Discovery failed:", error.message);
+      return {
+        discoveredProducts: [],
+        currentStep: "discover",
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Node: Select best product using LLM
+   */
+  private async selectNode(state: BuyerStateType): Promise<Partial<BuyerStateType>> {
+    console.log("\n🤔 [SELECT] Evaluating products with LLM...");
+
+    if (state.discoveredProducts.length === 0) {
+      console.log("   ❌ No products to evaluate");
+      return {
+        selectedProduct: null,
+        currentStep: "select",
+        error: "No products found",
+      };
+    }
+
+    try {
+      // Create prompt for LLM
+      const prompt = createProductSelectionPrompt(
+        state.userRequest,
+        state.discoveredProducts
+      );
+
+      // Get LLM decision
+      const response = await this.llm.invoke(prompt);
+      const decision = JSON.parse(response.content as string);
+
+      console.log(`   Decision: ${decision.reasoning}`);
+      console.log(`   Confidence: ${decision.confidence}`);
+
+      if (!decision.selectedProductId) {
+        console.log("   ❌ No suitable product found");
+        return {
+          selectedProduct: null,
+          currentStep: "select",
+          error: "No suitable product found",
+        };
+      }
+
+      const selectedProduct = state.discoveredProducts.find(
+        (p) => p.id === decision.selectedProductId
+      );
+
+      if (!selectedProduct) {
+        console.log("   ❌ Selected product not found");
+        return {
+          selectedProduct: null,
+          currentStep: "select",
+          error: "Selected product not found",
+        };
+      }
+
+      console.log(`   ✅ Selected: ${selectedProduct.title}`);
+      console.log(`   Price: ${selectedProduct.price} ${selectedProduct.currency}`);
+
+      return {
+        selectedProduct,
+        currentStep: "select",
+        error: null,
+      };
+    } catch (error: any) {
+      console.error("   ❌ Selection failed:", error.message);
+      return {
+        selectedProduct: null,
+        currentStep: "select",
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Node: Negotiate with seller via A2A
+   */
+  private async negotiateNode(state: BuyerStateType): Promise<Partial<BuyerStateType>> {
+    console.log("\n💬 [NEGOTIATE] Negotiating with seller...");
+
+    if (!state.selectedProduct) {
+      return {
+        offerAccepted: false,
+        currentStep: "negotiate",
+        error: "No product selected",
+      };
+    }
+
+    try {
+      // Create negotiation prompt
+      const prompt = createNegotiationPrompt(
+        state.selectedProduct,
+        state.userBudget
+      );
+
+      // Get LLM decision
+      const response = await this.llm.invoke(prompt);
+      const decision = JSON.parse(response.content as string);
+
+      console.log(`   Action: ${decision.action}`);
+      console.log(`   Reasoning: ${decision.reasoning}`);
+
+      if (decision.action === "reject") {
+        console.log("   ❌ Rejecting product, looking for alternatives");
+        return {
+          selectedProduct: null, // Trigger re-selection
+          offerAccepted: false,
+          currentStep: "negotiate",
+          error: null,
+        };
+      }
+
+      // Send offer to seller via A2A
+      const offerMessage = createA2AMessage("user", [
+        {
+          kind: "text",
+          text: decision.message,
+        },
+      ]);
+
+      // Add metadata for structured processing
+      offerMessage.metadata = {
+        type: "purchase_offer",
+        productId: state.selectedProduct.id,
+        offerPrice: decision.offerPrice,
+        currency: state.selectedProduct.currency,
+      };
+
+      console.log(`   📤 Sending offer to seller agent ${state.selectedProduct.sellerAgentId}`);
+      console.log(`   Offer: ${decision.offerPrice} ${state.selectedProduct.currency}`);
+
+      // Send message via A2A client
+      const task = await this.a2aClient.sendMessage(
+        state.selectedProduct.sellerAgentId || "28",
+        offerMessage
+      );
+
+      // Wait for seller response
+      console.log(`   ⏳ Waiting for seller response...`);
+      const result = await this.a2aClient.waitForTask(
+        state.selectedProduct.sellerAgentId || "28",
+        task.id,
+        30000 // 30 second timeout
+      );
+
+      if (result.status.state === "completed" && result.status.message) {
+        const sellerResponse = result.status.message;
+        console.log(`   📥 Seller response: ${sellerResponse.parts[0]?.text}`);
+
+        // Check if offer was accepted
+        const accepted = sellerResponse.metadata?.accepted === true;
+
+        if (accepted) {
+          console.log("   ✅ Offer accepted!");
+          return {
+            offerAccepted: true,
+            negotiationHistory: [...(state.negotiationHistory || []), { offer: decision, response: sellerResponse }],
+            currentStep: "negotiate",
+            error: null,
+          };
+        } else {
+          console.log("   ❌ Offer rejected, trying another product");
+          return {
+            selectedProduct: null, // Trigger re-selection
+            offerAccepted: false,
+            negotiationHistory: [...(state.negotiationHistory || []), { offer: decision, response: sellerResponse }],
+            currentStep: "negotiate",
+            error: null,
+          };
+        }
+      }
+
+      console.log("   ⚠️ No response from seller");
+      return {
+        offerAccepted: false,
+        currentStep: "negotiate",
+        error: "No response from seller",
+      };
+    } catch (error: any) {
+      console.error("   ❌ Negotiation failed:", error.message);
+      return {
+        offerAccepted: false,
+        currentStep: "negotiate",
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Node: Execute payment
+   */
+  private async payNode(state: BuyerStateType): Promise<Partial<BuyerStateType>> {
+    console.log("\n💰 [PAY] Executing payment...");
+
+    if (!state.selectedProduct || !state.offerAccepted) {
+      return {
+        paymentId: null,
+        currentStep: "pay",
+        error: "Cannot pay: no accepted offer",
+      };
+    }
+
+    try {
+      // Create escrow payment via x402
+      console.log(`   Creating escrow for ${state.selectedProduct.price} ${state.selectedProduct.currency}`);
+      
+      const escrowId = await x402Service.createEscrowPayment(
+        state.selectedProduct.sellerAddress || "",
+        state.selectedProduct.price,
+        ["shipment_confirmed"]
+      );
+
+      console.log(`   ✅ Escrow created: ${escrowId}`);
+
+      // Process payment
+      const paymentId = await x402Service.processAgentPayment(
+        state.selectedProduct.sellerAddress || "",
+        state.selectedProduct.price,
+        state.selectedProduct.currency,
+        state.selectedProduct.id
+      );
+
+      console.log(`   ✅ Payment processed: ${paymentId}`);
+
+      return {
+        paymentId,
+        escrowId,
+        currentStep: "pay",
+        error: null,
+      };
+    } catch (error: any) {
+      console.error("   ❌ Payment failed:", error.message);
+      return {
+        paymentId: null,
+        escrowId: null,
+        currentStep: "pay",
+        error: error.message,
+      };
+    }
+  }
+
+  /**
+   * Node: Complete purchase
+   */
+  private async completeNode(state: BuyerStateType): Promise<Partial<BuyerStateType>> {
+    console.log("\n✅ [COMPLETE] Finalizing purchase...");
+
+    if (!state.paymentId || !state.escrowId) {
+      return {
+        currentStep: "complete",
+        error: "Cannot complete: no payment",
+        finalResult: null,
+      };
+    }
+
+    try {
+      // In a real implementation, we would:
+      // 1. Wait for shipment confirmation from seller
+      // 2. Verify tracking information
+      // 3. Release escrow funds
+
+      console.log(`   ✅ Purchase complete!`);
+      console.log(`   Product: ${state.selectedProduct?.title}`);
+      console.log(`   Price: ${state.selectedProduct?.price} ${state.selectedProduct?.currency}`);
+      console.log(`   Payment ID: ${state.paymentId}`);
+      console.log(`   Escrow ID: ${state.escrowId}`);
+
+      return {
+        currentStep: "complete",
+        error: null,
+        finalResult: {
+          success: true,
+          product: state.selectedProduct,
+          paymentId: state.paymentId,
+          escrowId: state.escrowId,
+        },
+      };
+    } catch (error: any) {
+      console.error("   ❌ Completion failed:", error.message);
+      return {
+        currentStep: "complete",
+        error: error.message,
+        finalResult: null,
+      };
+    }
+  }
+
+  /**
+   * Conditional edge: Should negotiate?
+   */
+  private shouldNegotiate(state: BuyerStateType): string {
+    if (state.selectedProduct) {
+      return "negotiate";
+    }
+    return "end";
+  }
+
+  /**
+   * Conditional edge: Should pay?
+   */
+  private shouldPay(state: BuyerState): string {
+    if (state.offerAccepted) {
+      return "pay";
+    }
+    if (state.selectedProduct === null) {
+      return "select"; // Try another product
+    }
+    return "end";
+  }
+
+  /**
+   * Execute buyer agent workflow
+   */
+  async executePurchase(userRequest: string, userBudget?: number): Promise<any> {
+    console.log("\n" + "=".repeat(60));
+    console.log("🤖 BUYER AGENT - Starting Purchase Workflow");
+    console.log("=".repeat(60));
+    console.log(`Request: "${userRequest}"`);
+    if (userBudget) {
+      console.log(`Budget: ${userBudget} HBAR`);
+    }
+    console.log("=".repeat(60));
+
+    const initialState: BuyerState = {
+      userRequest,
+      userBudget,
+      discoveredProducts: [],
+      selectedProduct: null,
+      negotiationHistory: [],
+      offerAccepted: false,
+      paymentId: null,
+      escrowId: null,
+      currentStep: "start",
+      error: null,
+      finalResult: null,
+    };
+
+    try {
+      const compiledGraph = this.graph.compile();
+      const result = await compiledGraph.invoke(initialState);
+
+      console.log("\n" + "=".repeat(60));
+      console.log("🎉 BUYER AGENT - Workflow Complete");
+      console.log("=".repeat(60));
+      console.log("Final State:", JSON.stringify(result.finalResult, null, 2));
+      console.log("=".repeat(60) + "\n");
+
+      return result;
+    } catch (error: any) {
+      console.error("\n❌ BUYER AGENT - Workflow Failed:", error.message);
+      throw error;
+    }
+  }
+}
+
+// Export singleton instance
+let buyerAgentInstance: BuyerAgent | null = null;
+
+export async function getBuyerAgent(): Promise<BuyerAgent> {
+  if (!buyerAgentInstance) {
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      throw new Error("GROQ_API_KEY not found in environment variables");
+    }
+
+    // Initialize x402 service for buyer
+    const buyerAccountId = process.env.BUYER_ACCOUNT_ID;
+    const buyerPrivateKey = process.env.BUYER_PRIVATE_KEY;
+
+    if (!buyerAccountId || !buyerPrivateKey) {
+      throw new Error("BUYER_ACCOUNT_ID or BUYER_PRIVATE_KEY not found in environment variables");
+    }
+
+    await x402Service.initialize(buyerAccountId, buyerPrivateKey);
+    console.log("✅ x402 service initialized for buyer agent");
+
+    buyerAgentInstance = new BuyerAgent(apiKey);
+  }
+  return buyerAgentInstance;
+}
+

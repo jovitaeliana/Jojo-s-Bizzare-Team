@@ -1,0 +1,16 @@
+{
+  "network": "hedera_testnet",
+  "chainId": 296,
+  "deployer": "0x18e7100F920BefC8CE24CeC9b6e64CB1a3F06AA0",
+  "timestamp": "2025-11-01T06:13:12.785Z",
+  "contracts": {
+    "EscrowFactory": {
+      "address": "0xEBa8087195A99ae8f6842600D39f5d2fb6Fe0817",
+      "transactionHash": "0xf1b98af0300ce006babb5f38899f27e36d4efedd38cb7779c621f543de802302"
+    }
+  },
+  "urls": {
+    "hashscan": "https://hashscan.io/testnet/contract/0xEBa8087195A99ae8f6842600D39f5d2fb6Fe0817",
+    "mirrorNode": "https://testnet.mirrornode.hedera.com/api/v1/contracts/0xEBa8087195A99ae8f6842600D39f5d2fb6Fe0817"
+  }
+}
